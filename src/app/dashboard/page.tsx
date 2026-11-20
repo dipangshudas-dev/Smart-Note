@@ -21,6 +21,7 @@ import {
 import { getSession } from '@/lib/auth';
 import TopNavigationBar from '@/components/TopNavigationBar';
 import { getOrders, getStockItems, getPettyCashEntries, getDayEndLogs } from '@/lib/data-store';
+import { isSupabaseConfigured } from '@/lib/supabase';
 
 export const dynamic = 'force-dynamic';
 
@@ -266,7 +267,16 @@ export default async function DashboardPage() {
         {/* System Information Banner */}
         <div className="mt-12 p-4 rounded-lg bg-surface-soft border border-hairline flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-muted">
           <div>
-            <span className="font-semibold text-ink">Smart Note Ledger System</span> &middot; Active Database: PostgreSQL (Supabase Connected)
+            <span className="font-semibold text-ink">Smart Note Ledger System</span> &middot; Active Database:{' '}
+            {isSupabaseConfigured ? (
+              <span className="text-semantic-success font-medium">
+                Supabase PostgreSQL (Connected)
+              </span>
+            ) : (
+              <span className="text-semantic-warning font-medium">
+                Local Offline Storage (Supabase credentials not configured in .env.local)
+              </span>
+            )}
           </div>
           <div className="flex items-center space-x-4">
             <span>Signed in as <strong className="text-ink">{session.name}</strong></span>

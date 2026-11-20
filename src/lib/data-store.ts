@@ -223,7 +223,8 @@ export async function createStockItem(item: {
       if (!error && data) {
         createdItem = data as StockItem;
       } else if (error) {
-        console.warn('Supabase stock insert error:', error.message);
+        console.error('Supabase stock insert error:', error.message);
+        throw new Error(`Supabase Error: ${error.message}. Make sure you ran supabase/schema.sql in Supabase SQL Editor.`);
       }
     } catch (err: any) {
       console.warn('Supabase stock insert exception:', err?.message);
