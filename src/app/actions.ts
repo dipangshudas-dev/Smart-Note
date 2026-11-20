@@ -89,7 +89,7 @@ export async function createStockItemAction(data: {
 }) {
   const session = await getSession();
   if (!session) {
-    return { error: 'Unauthorized' };
+    return { error: 'Your session has expired. Please sign out and log in again.' };
   }
 
   try {

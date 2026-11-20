@@ -35,6 +35,12 @@ export default function DeliveryConfirmationManager({
   const [successReceipt, setSuccessReceipt] = useState<Order | null>(null);
   const [tabFilter, setTabFilter] = useState<'pending' | 'delivered'>('pending');
 
+  useEffect(() => {
+    if (initialOrders) {
+      setOrders(initialOrders);
+    }
+  }, [initialOrders]);
+
   const pendingDeliveries = orders.filter((o) => o.status === 'Ready' || o.status === 'Processing');
   const deliveredOrders = orders.filter((o) => o.status === 'Delivered');
 

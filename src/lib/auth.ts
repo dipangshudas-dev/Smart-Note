@@ -27,21 +27,34 @@ function signPayload(payload: string): string {
  */
 function verifyAndExtract(token: string): string | null {
   try {
-    const parts = token.split('.');
-    if (parts.length !== 2) return null;
+    if (token.includes('.')) {
+      const parts = token.split('.');
+      if (parts.length === 2) {
+        const [b64Payload, signature] = parts;
+        const payload = Buffer.from(b64Payload, 'base64url').toString('utf-8');
+        const expectedSig = crypto.createHmac('sha256', SESSION_SECRET).update(payload).digest('hex');
 
-    const [b64Payload, signature] = parts;
-    const payload = Buffer.from(b64Payload, 'base64url').toString('utf-8');
-    const expectedSig = crypto.createHmac('sha256', SESSION_SECRET).update(payload).digest('hex');
+        const sigBuf = Buffer.from(signature, 'hex');
+        const expBuf = Buffer.from(expectedSig, 'hex');
 
-    const sigBuf = Buffer.from(signature, 'hex');
-    const expBuf = Buffer.from(expectedSig, 'hex');
-
-    if (sigBuf.length !== expBuf.length || !crypto.timingSafeEqual(sigBuf, expBuf)) {
-      return null;
+        if (sigBuf.length === expBuf.length && crypto.timingSafeEqual(sigBuf, expBuf)) {
+          return payload;
+        }
+      }
     }
 
-    return payload;
+    // Fallback for legacy unsigned base64 sessions
+    try {
+      const decoded = Buffer.from(token, 'base64').toString('utf-8');
+      const testParse = JSON.parse(decoded);
+      if (testParse && testParse.userId && testParse.name && testParse.role) {
+        return decoded;
+      }
+    } catch {
+      // not a valid legacy token
+    }
+
+    return null;
   } catch {
     return null;
   }

@@ -12,6 +12,9 @@
 /build
 /dist
 
+# Local persistent data storage
+/data/
+
 # Environment variables & secrets (CRITICAL: Never commit .env.local to GitHub)
 .env
 .env*.local

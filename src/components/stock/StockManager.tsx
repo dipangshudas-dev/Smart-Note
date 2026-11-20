@@ -1,6 +1,7 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
+import { useRouter } from 'next/navigation';
 import {
   Package,
   Plus,
@@ -26,10 +27,17 @@ interface StockManagerProps {
 }
 
 export default function StockManager({ initialStock, userRole }: StockManagerProps) {
-  const [stockList, setStockList] = useState<StockItem[]>(initialStock);
+  const router = useRouter();
+  const [stockList, setStockList] = useState<StockItem[]>(initialStock || []);
   const [searchQuery, setSearchQuery] = useState('');
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [editingItemId, setEditingItemId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (initialStock) {
+      setStockList(initialStock);
+    }
+  }, [initialStock]);
 
   // Form state for adding new item
   const [newName, setNewName] = useState('');
@@ -69,23 +77,31 @@ export default function StockManager({ initialStock, userRole }: StockManagerPro
     }
 
     setIsSubmitting(true);
-    const res = await createStockItemAction({
-      name: newName.trim(),
-      sku: newSku.trim() || undefined,
-      unit_price: priceNum,
-      quantity: qtyNum,
-    });
+    try {
+      const res = await createStockItemAction({
+        name: newName.trim(),
+        sku: newSku.trim() || undefined,
+        unit_price: priceNum,
+        quantity: qtyNum,
+      });
 
-    setIsSubmitting(false);
-    if (res.error) {
-      setFormError(res.error);
-    } else if (res.item) {
-      setStockList([res.item, ...stockList]);
-      setNewName('');
-      setNewSku('');
-      setNewPrice('');
-      setNewQuantity('');
-      setIsAddModalOpen(false);
+      setIsSubmitting(false);
+      if (res && res.error) {
+        setFormError(res.error);
+      } else if (res && res.item) {
+        setStockList((prev) => [res.item!, ...prev.filter((i) => i.id !== res.item!.id)]);
+        setNewName('');
+        setNewSku('');
+        setNewPrice('');
+        setNewQuantity('');
+        setIsAddModalOpen(false);
+        router.refresh();
+      } else {
+        setFormError('Failed to add item. Please try again.');
+      }
+    } catch (err: any) {
+      setIsSubmitting(false);
+      setFormError(err?.message || 'Server error occurred while adding stock.');
     }
   };
 
@@ -105,11 +121,12 @@ export default function StockManager({ initialStock, userRole }: StockManagerPro
       quantity: editQuantity,
     });
 
-    if (res.error) {
+    if (res && res.error) {
       alert(res.error);
-    } else if (res.item) {
-      setStockList(stockList.map((s) => (s.id === id ? res.item! : s)));
+    } else if (res && res.item) {
+      setStockList((prev) => prev.map((s) => (s.id === id ? res.item! : s)));
       setEditingItemId(null);
+      router.refresh();
     }
   };
 
@@ -117,18 +134,20 @@ export default function StockManager({ initialStock, userRole }: StockManagerPro
     if (!confirm(`Are you sure you want to remove "${name}" from stock?`)) return;
 
     const res = await deleteStockItemAction(id);
-    if (res.error) {
+    if (res && res.error) {
       alert(res.error);
     } else {
-      setStockList(stockList.filter((s) => s.id !== id));
+      setStockList((prev) => prev.filter((s) => s.id !== id));
+      router.refresh();
     }
   };
 
   const handleQuickRestock = async (id: string, currentQty: number, addQty: number) => {
     const newQty = currentQty + addQty;
     const res = await updateStockItemAction(id, { quantity: newQty });
-    if (res.item) {
-      setStockList(stockList.map((s) => (s.id === id ? res.item! : s)));
+    if (res && res.item) {
+      setStockList((prev) => prev.map((s) => (s.id === id ? res.item! : s)));
+      router.refresh();
     }
   };
 

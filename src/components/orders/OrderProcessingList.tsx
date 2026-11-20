@@ -24,11 +24,17 @@ interface OrderProcessingListProps {
 }
 
 export default function OrderProcessingList({ initialOrders }: OrderProcessingListProps) {
-  const [orders, setOrders] = useState<Order[]>(initialOrders);
+  const [orders, setOrders] = useState<Order[]>(initialOrders || []);
   const [statusFilter, setStatusFilter] = useState<string>('All');
   const [searchQuery, setSearchQuery] = useState('');
   const [expandedOrderId, setExpandedOrderId] = useState<string | null>(null);
   const [isUpdating, setIsUpdating] = useState<string | null>(null);
+
+  React.useEffect(() => {
+    if (initialOrders) {
+      setOrders(initialOrders);
+    }
+  }, [initialOrders]);
 
   const statusTabs = ['All', 'Pending', 'Processing', 'Ready', 'Delivered', 'Cancelled'];
 

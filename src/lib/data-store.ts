@@ -1,8 +1,11 @@
 import crypto from 'crypto';
+import fs from 'fs';
+import path from 'path';
 import { supabase, isSupabaseConfigured } from './supabase';
 import { User, StockItem, Order, OrderItem, PettyCash, DayEndLog, Target, OrderStatus } from '@/types';
 
 const AUTH_SECRET_SALT = process.env.AUTH_SECRET_SALT || 'smart_note_production_security_salt_2026';
+const DB_FILE_PATH = path.join(process.cwd(), 'data', 'smart_note_db.json');
 
 export function hashPassword(plainText: string): string {
   return crypto
@@ -28,7 +31,7 @@ export function verifyPassword(plainText: string, storedHash: string): boolean {
   return false;
 }
 
-// Initial registered users with secure cryptographic hashes
+// Initial registered administrator
 const INITIAL_USERS: User[] = [
   {
     id: '11111111-1111-1111-1111-111111111111',
@@ -39,19 +42,56 @@ const INITIAL_USERS: User[] = [
   },
 ];
 
-// Initial stock items - empty for clean production data
-const INITIAL_STOCK: StockItem[] = [];
+interface LocalDatabase {
+  users: User[];
+  stock_items: StockItem[];
+  orders: Order[];
+  petty_cash: PettyCash[];
+  day_end_logs: DayEndLog[];
+  targets: Target[];
+}
 
-// Initial orders - empty for clean production data
-const INITIAL_ORDERS: Order[] = [];
+function getLocalDB(): LocalDatabase {
+  try {
+    if (fs.existsSync(DB_FILE_PATH)) {
+      const content = fs.readFileSync(DB_FILE_PATH, 'utf-8');
+      const parsed = JSON.parse(content);
+      return {
+        users: Array.isArray(parsed.users) && parsed.users.length > 0 ? parsed.users : INITIAL_USERS,
+        stock_items: Array.isArray(parsed.stock_items) ? parsed.stock_items : [],
+        orders: Array.isArray(parsed.orders) ? parsed.orders : [],
+        petty_cash: Array.isArray(parsed.petty_cash) ? parsed.petty_cash : [],
+        day_end_logs: Array.isArray(parsed.day_end_logs) ? parsed.day_end_logs : [],
+        targets: Array.isArray(parsed.targets) ? parsed.targets : [],
+      };
+    }
+  } catch (err) {
+    console.error('Error reading local db:', err);
+  }
 
-// In-memory singleton stores to hold state across server action invocations
-let usersStore: User[] = [...INITIAL_USERS];
-let stockStore: StockItem[] = [...INITIAL_STOCK];
-let ordersStore: Order[] = [...INITIAL_ORDERS];
-let pettyCashStore: PettyCash[] = [];
-let dayEndLogsStore: DayEndLog[] = [];
-let targetsStore: Target[] = [];
+  const defaultDb: LocalDatabase = {
+    users: [...INITIAL_USERS],
+    stock_items: [],
+    orders: [],
+    petty_cash: [],
+    day_end_logs: [],
+    targets: [],
+  };
+  saveLocalDB(defaultDb);
+  return defaultDb;
+}
+
+function saveLocalDB(data: LocalDatabase): void {
+  try {
+    const dir = path.dirname(DB_FILE_PATH);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    fs.writeFileSync(DB_FILE_PATH, JSON.stringify(data, null, 2), 'utf-8');
+  } catch (err) {
+    console.error('Error saving local db:', err);
+  }
+}
 
 // Helper to generate UUIDs
 export function generateUUID(): string {
@@ -72,22 +112,27 @@ export async function authenticateUser(name: string, password: string): Promise<
   const normalizedName = name.trim().toLowerCase();
 
   if (isSupabaseConfigured && supabase) {
-    const { data, error } = await supabase
-      .from('users')
-      .select('*')
-      .ilike('name', normalizedName)
-      .single();
+    try {
+      const { data, error } = await supabase
+        .from('users')
+        .select('*')
+        .ilike('name', normalizedName)
+        .single();
 
-    if (!error && data && data.password_hash) {
-      if (verifyPassword(password.trim(), data.password_hash)) {
-        const { password_hash, ...safeUser } = data;
-        return safeUser as User;
+      if (!error && data && data.password_hash) {
+        if (verifyPassword(password.trim(), data.password_hash)) {
+          const { password_hash, ...safeUser } = data;
+          return safeUser as User;
+        }
       }
+    } catch (err) {
+      console.warn('Supabase auth failed, checking local store:', err);
     }
   }
 
-  // Fallback to local secure store
-  const user = usersStore.find((u) => u.name.toLowerCase() === normalizedName);
+  // Fallback to local store
+  const db = getLocalDB();
+  const user = db.users.find((u) => u.name.toLowerCase() === normalizedName);
 
   if (user && user.password_hash) {
     if (verifyPassword(password.trim(), user.password_hash)) {
@@ -101,13 +146,18 @@ export async function authenticateUser(name: string, password: string): Promise<
 
 export async function getUserById(id: string): Promise<User | null> {
   if (isSupabaseConfigured && supabase) {
-    const { data } = await supabase.from('users').select('*').eq('id', id).single();
-    if (data) {
-      const { password_hash, ...safeUser } = data;
-      return safeUser as User;
+    try {
+      const { data } = await supabase.from('users').select('*').eq('id', id).single();
+      if (data) {
+        const { password_hash, ...safeUser } = data;
+        return safeUser as User;
+      }
+    } catch {
+      // fallback
     }
   }
-  const user = usersStore.find((u) => u.id === id);
+  const db = getLocalDB();
+  const user = db.users.find((u) => u.id === id);
   if (user) {
     const { password_hash, ...safeUser } = user;
     return safeUser as User;
@@ -120,21 +170,32 @@ export async function getUserById(id: string): Promise<User | null> {
 // -------------------------------------------------------------
 export async function getStockItems(): Promise<StockItem[]> {
   if (isSupabaseConfigured && supabase) {
-    const { data, error } = await supabase
-      .from('stock_items')
-      .select('*')
-      .order('name', { ascending: true });
-    if (!error && data) return data as StockItem[];
+    try {
+      const { data, error } = await supabase
+        .from('stock_items')
+        .select('*')
+        .order('name', { ascending: true });
+      if (!error && data) return data as StockItem[];
+    } catch (err) {
+      console.warn('Supabase getStockItems failed, loading local items:', err);
+    }
   }
-  return [...stockStore].sort((a, b) => a.name.localeCompare(b.name));
+
+  const db = getLocalDB();
+  return db.stock_items.sort((a, b) => a.name.localeCompare(b.name));
 }
 
 export async function getStockItemById(id: string): Promise<StockItem | null> {
   if (isSupabaseConfigured && supabase) {
-    const { data } = await supabase.from('stock_items').select('*').eq('id', id).single();
-    if (data) return data as StockItem;
+    try {
+      const { data } = await supabase.from('stock_items').select('*').eq('id', id).single();
+      if (data) return data as StockItem;
+    } catch {
+      // fallback
+    }
   }
-  return stockStore.find((item) => item.id === id) || null;
+  const db = getLocalDB();
+  return db.stock_items.find((item) => item.id === id) || null;
 }
 
 export async function createStockItem(item: {
@@ -143,69 +204,109 @@ export async function createStockItem(item: {
   unit_price: number;
   quantity: number;
 }): Promise<StockItem> {
+  let createdItem: StockItem | null = null;
+
   if (isSupabaseConfigured && supabase) {
-    const { data, error } = await supabase
-      .from('stock_items')
-      .insert({
-        name: item.name.trim(),
-        sku: item.sku?.trim() || null,
-        unit_price: Number(item.unit_price),
-        quantity: Number(item.quantity),
-        updated_at: new Date().toISOString(),
-      })
-      .select()
-      .single();
-    if (!error && data) return data as StockItem;
+    try {
+      const { data, error } = await supabase
+        .from('stock_items')
+        .insert({
+          name: item.name.trim(),
+          sku: item.sku?.trim() || null,
+          unit_price: Number(item.unit_price),
+          quantity: Number(item.quantity),
+          updated_at: new Date().toISOString(),
+        })
+        .select()
+        .single();
+
+      if (!error && data) {
+        createdItem = data as StockItem;
+      } else if (error) {
+        console.warn('Supabase stock insert error:', error.message);
+      }
+    } catch (err: any) {
+      console.warn('Supabase stock insert exception:', err?.message);
+    }
   }
 
-  const newItem: StockItem = {
-    id: generateUUID(),
-    name: item.name.trim(),
-    sku: item.sku?.trim() || null,
-    unit_price: Number(item.unit_price),
-    quantity: Number(item.quantity),
-    updated_at: new Date().toISOString(),
-  };
-  stockStore.unshift(newItem);
-  return newItem;
+  if (!createdItem) {
+    createdItem = {
+      id: generateUUID(),
+      name: item.name.trim(),
+      sku: item.sku?.trim() || null,
+      unit_price: Number(item.unit_price),
+      quantity: Number(item.quantity),
+      updated_at: new Date().toISOString(),
+    };
+  }
+
+  // Always save to persistent local store
+  const db = getLocalDB();
+  db.stock_items = [createdItem, ...db.stock_items.filter((s) => s.id !== createdItem!.id)];
+  saveLocalDB(db);
+
+  return createdItem;
 }
 
 export async function updateStockItem(
   id: string,
   updates: Partial<Pick<StockItem, 'name' | 'sku' | 'unit_price' | 'quantity'>>
 ): Promise<StockItem | null> {
+  let updatedItem: StockItem | null = null;
+
   if (isSupabaseConfigured && supabase) {
-    const { data, error } = await supabase
-      .from('stock_items')
-      .update({
-        ...updates,
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', id)
-      .select()
-      .single();
-    if (!error && data) return data as StockItem;
+    try {
+      const { data, error } = await supabase
+        .from('stock_items')
+        .update({
+          ...updates,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', id)
+        .select()
+        .single();
+      if (!error && data) updatedItem = data as StockItem;
+    } catch (err) {
+      console.warn('Supabase stock update error:', err);
+    }
   }
 
-  const index = stockStore.findIndex((i) => i.id === id);
-  if (index === -1) return null;
+  const db = getLocalDB();
+  const index = db.stock_items.findIndex((i) => i.id === id);
+  if (index !== -1) {
+    db.stock_items[index] = {
+      ...db.stock_items[index],
+      ...updates,
+      updated_at: new Date().toISOString(),
+    };
+    saveLocalDB(db);
+    return db.stock_items[index];
+  }
 
-  stockStore[index] = {
-    ...stockStore[index],
-    ...updates,
-    updated_at: new Date().toISOString(),
-  };
-  return stockStore[index];
+  return updatedItem;
 }
 
 export async function deleteStockItem(id: string): Promise<boolean> {
   if (isSupabaseConfigured && supabase) {
-    const { error } = await supabase.from('stock_items').delete().eq('id', id);
-    if (!error) return true;
+    try {
+      const { error } = await supabase.from('stock_items').delete().eq('id', id);
+      if (!error) {
+        const db = getLocalDB();
+        db.stock_items = db.stock_items.filter((s) => s.id !== id);
+        saveLocalDB(db);
+        return true;
+      }
+    } catch {
+      // fallback
+    }
   }
-  const index = stockStore.findIndex((i) => i.id === id);
+
+  const db = getLocalDB();
+  const index = db.stock_items.findIndex((i) => i.id === id);
   if (index !== -1) {
-    stockStore.splice(index, 1);
+    db.stock_items.splice(index, 1);
+    saveLocalDB(db);
     return true;
   }
   return false;
@@ -216,32 +317,37 @@ export async function deleteStockItem(id: string): Promise<boolean> {
 // -------------------------------------------------------------
 export async function getOrders(statusFilter?: string): Promise<Order[]> {
   if (isSupabaseConfigured && supabase) {
-    let query = supabase
-      .from('orders')
-      .select(`
-        *,
-        items:order_items(
+    try {
+      let query = supabase
+        .from('orders')
+        .select(`
           *,
-          stock_item:stock_items(*)
-        ),
-        created_by_user:users(name)
-      `)
-      .order('created_at', { ascending: false });
+          items:order_items(
+            *,
+            stock_item:stock_items(*)
+          ),
+          created_by_user:users(name)
+        `)
+        .order('created_at', { ascending: false });
 
-    if (statusFilter && statusFilter !== 'All') {
-      query = query.eq('status', statusFilter);
-    }
+      if (statusFilter && statusFilter !== 'All') {
+        query = query.eq('status', statusFilter);
+      }
 
-    const { data, error } = await query;
-    if (!error && data) {
-      return data.map((o: any) => ({
-        ...o,
-        created_by_name: o.created_by_user?.name || 'Staff',
-      })) as Order[];
+      const { data, error } = await query;
+      if (!error && data) {
+        return data.map((o: any) => ({
+          ...o,
+          created_by_name: o.created_by_user?.name || 'Staff',
+        })) as Order[];
+      }
+    } catch (err) {
+      console.warn('Supabase getOrders error:', err);
     }
   }
 
-  let list = [...ordersStore];
+  const db = getLocalDB();
+  let list = [...db.orders];
   if (statusFilter && statusFilter !== 'All') {
     list = list.filter((o) => o.status === statusFilter);
   }
@@ -292,12 +398,13 @@ export async function createOrder(data: {
   const dueAmount = Math.max(0, totalAmount - advanceAmount);
 
   // Generate order number
-  const nextSeq = 1001 + ordersStore.length;
+  const db = getLocalDB();
+  const nextSeq = 1001 + db.orders.length;
   const orderNumber = `SN-${nextSeq}`;
   const orderId = generateUUID();
 
   const orderItems: OrderItem[] = data.items.map((item) => {
-    const stock = stockStore.find((s) => s.id === item.stock_item_id);
+    const stock = currentStocks.find((s) => s.id === item.stock_item_id);
     return {
       id: generateUUID(),
       order_id: orderId,
@@ -326,42 +433,48 @@ export async function createOrder(data: {
   };
 
   if (isSupabaseConfigured && supabase) {
-    const { data: dbOrder } = await supabase
-      .from('orders')
-      .insert({
-        id: newOrder.id,
-        order_number: newOrder.order_number,
-        customer_name: newOrder.customer_name,
-        customer_phone: newOrder.customer_phone,
-        total_amount: newOrder.total_amount,
-        advance_amount: newOrder.advance_amount,
-        due_amount: newOrder.due_amount,
-        status: newOrder.status,
-        created_by: newOrder.created_by,
-        created_at: newOrder.created_at,
-      })
-      .select()
-      .single();
+    try {
+      const { data: dbOrder } = await supabase
+        .from('orders')
+        .insert({
+          id: newOrder.id,
+          order_number: newOrder.order_number,
+          customer_name: newOrder.customer_name,
+          customer_phone: newOrder.customer_phone,
+          total_amount: newOrder.total_amount,
+          advance_amount: newOrder.advance_amount,
+          due_amount: newOrder.due_amount,
+          status: newOrder.status,
+          created_by: newOrder.created_by,
+          created_at: newOrder.created_at,
+        })
+        .select()
+        .single();
 
-    if (dbOrder) {
-      const itemsToInsert = orderItems.map((oi) => ({
-        id: oi.id,
-        order_id: oi.order_id,
-        stock_item_id: oi.stock_item_id,
-        quantity: oi.quantity,
-        unit_price: oi.unit_price,
-        line_total: oi.line_total,
-      }));
-      await supabase.from('order_items').insert(itemsToInsert);
+      if (dbOrder) {
+        const itemsToInsert = orderItems.map((oi) => ({
+          id: oi.id,
+          order_id: oi.order_id,
+          stock_item_id: oi.stock_item_id,
+          quantity: oi.quantity,
+          unit_price: oi.unit_price,
+          line_total: oi.line_total,
+        }));
+        await supabase.from('order_items').insert(itemsToInsert);
+      }
+    } catch (err) {
+      console.warn('Supabase order insert error, saved locally:', err);
     }
   }
 
-  ordersStore.unshift(newOrder);
+  db.orders.unshift(newOrder);
+  saveLocalDB(db);
   return newOrder;
 }
 
 export async function updateOrderStatus(orderId: string, newStatus: OrderStatus): Promise<Order | null> {
-  const order = ordersStore.find((o) => o.id === orderId);
+  const db = getLocalDB();
+  const order = db.orders.find((o) => o.id === orderId);
   if (!order) return null;
 
   order.status = newStatus;
@@ -370,15 +483,20 @@ export async function updateOrderStatus(orderId: string, newStatus: OrderStatus)
   }
 
   if (isSupabaseConfigured && supabase) {
-    await supabase
-      .from('orders')
-      .update({
-        status: newStatus,
-        delivered_at: order.delivered_at,
-      })
-      .eq('id', orderId);
+    try {
+      await supabase
+        .from('orders')
+        .update({
+          status: newStatus,
+          delivered_at: order.delivered_at,
+        })
+        .eq('id', orderId);
+    } catch (err) {
+      console.warn('Supabase order update status error:', err);
+    }
   }
 
+  saveLocalDB(db);
   return order;
 }
 
@@ -386,7 +504,8 @@ export async function confirmDelivery(
   orderId: string,
   collectedAmount?: number
 ): Promise<Order | null> {
-  const order = ordersStore.find((o) => o.id === orderId);
+  const db = getLocalDB();
+  const order = db.orders.find((o) => o.id === orderId);
   if (!order) return null;
 
   const paymentToCollect =
@@ -398,17 +517,22 @@ export async function confirmDelivery(
   order.due_amount = Math.max(0, order.total_amount - order.advance_amount);
 
   if (isSupabaseConfigured && supabase) {
-    await supabase
-      .from('orders')
-      .update({
-        status: 'Delivered',
-        delivered_at: order.delivered_at,
-        advance_amount: order.advance_amount,
-        due_amount: order.due_amount,
-      })
-      .eq('id', orderId);
+    try {
+      await supabase
+        .from('orders')
+        .update({
+          status: 'Delivered',
+          delivered_at: order.delivered_at,
+          advance_amount: order.advance_amount,
+          due_amount: order.due_amount,
+        })
+        .eq('id', orderId);
+    } catch (err) {
+      console.warn('Supabase confirm delivery error:', err);
+    }
   }
 
+  saveLocalDB(db);
   return order;
 }
 
@@ -421,21 +545,26 @@ export async function getPettyCashEntries(params?: {
   endDate?: string;
 }): Promise<PettyCash[]> {
   if (isSupabaseConfigured && supabase) {
-    let query = supabase.from('petty_cash').select('*').order('entry_date', { ascending: false });
-    if (params?.category && params.category !== 'All') {
-      query = query.eq('category', params.category);
+    try {
+      let query = supabase.from('petty_cash').select('*').order('entry_date', { ascending: false });
+      if (params?.category && params.category !== 'All') {
+        query = query.eq('category', params.category);
+      }
+      if (params?.startDate) {
+        query = query.gte('entry_date', params.startDate);
+      }
+      if (params?.endDate) {
+        query = query.lte('entry_date', params.endDate);
+      }
+      const { data } = await query;
+      if (data) return data as PettyCash[];
+    } catch (err) {
+      console.warn('Supabase petty cash read error:', err);
     }
-    if (params?.startDate) {
-      query = query.gte('entry_date', params.startDate);
-    }
-    if (params?.endDate) {
-      query = query.lte('entry_date', params.endDate);
-    }
-    const { data } = await query;
-    if (data) return data as PettyCash[];
   }
 
-  let list = [...pettyCashStore];
+  const db = getLocalDB();
+  let list = [...db.petty_cash];
   if (params?.category && params.category !== 'All') {
     list = list.filter((p) => p.category === params.category);
   }
@@ -466,11 +595,17 @@ export async function createPettyCash(entry: {
   };
 
   if (isSupabaseConfigured && supabase) {
-    const { data } = await supabase.from('petty_cash').insert(newEntry).select().single();
-    if (data) return data as PettyCash;
+    try {
+      const { data } = await supabase.from('petty_cash').insert(newEntry).select().single();
+      if (data) return data as PettyCash;
+    } catch (err) {
+      console.warn('Supabase petty cash insert error:', err);
+    }
   }
 
-  pettyCashStore.unshift(newEntry);
+  const db = getLocalDB();
+  db.petty_cash.unshift(newEntry);
+  saveLocalDB(db);
   return newEntry;
 }
 
@@ -479,18 +614,24 @@ export async function createPettyCash(entry: {
 // -------------------------------------------------------------
 export async function getDayEndLogs(): Promise<DayEndLog[]> {
   if (isSupabaseConfigured && supabase) {
-    const { data } = await supabase
-      .from('day_end_logs')
-      .select('*, closed_by_user:users(name)')
-      .order('close_date', { ascending: false });
-    if (data) {
-      return data.map((d: any) => ({
-        ...d,
-        closed_by_name: d.closed_by_user?.name || 'Staff',
-      })) as DayEndLog[];
+    try {
+      const { data } = await supabase
+        .from('day_end_logs')
+        .select('*, closed_by_user:users(name)')
+        .order('close_date', { ascending: false });
+      if (data) {
+        return data.map((d: any) => ({
+          ...d,
+          closed_by_name: d.closed_by_user?.name || 'Staff',
+        })) as DayEndLog[];
+      }
+    } catch (err) {
+      console.warn('Supabase day end read error:', err);
     }
   }
-  return [...dayEndLogsStore].sort((a, b) => b.close_date.localeCompare(a.close_date));
+
+  const db = getLocalDB();
+  return db.day_end_logs.sort((a, b) => b.close_date.localeCompare(a.close_date));
 }
 
 export async function createDayEndLog(log: {
@@ -520,11 +661,17 @@ export async function createDayEndLog(log: {
   };
 
   if (isSupabaseConfigured && supabase) {
-    const { data } = await supabase.from('day_end_logs').insert(newLog).select().single();
-    if (data) return data as DayEndLog;
+    try {
+      const { data } = await supabase.from('day_end_logs').insert(newLog).select().single();
+      if (data) return data as DayEndLog;
+    } catch (err) {
+      console.warn('Supabase day end insert error:', err);
+    }
   }
 
-  dayEndLogsStore.unshift(newLog);
+  const db = getLocalDB();
+  db.day_end_logs.unshift(newLog);
+  saveLocalDB(db);
   return newLog;
 }
 
@@ -533,8 +680,14 @@ export async function createDayEndLog(log: {
 // -------------------------------------------------------------
 export async function getTargets(): Promise<Target[]> {
   if (isSupabaseConfigured && supabase) {
-    const { data } = await supabase.from('targets').select('*').order('created_at', { ascending: false });
-    if (data) return data as Target[];
+    try {
+      const { data } = await supabase.from('targets').select('*').order('created_at', { ascending: false });
+      if (data) return data as Target[];
+    } catch (err) {
+      console.warn('Supabase targets read error:', err);
+    }
   }
-  return [...targetsStore];
+
+  const db = getLocalDB();
+  return db.targets;
 }
